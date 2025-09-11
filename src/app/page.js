@@ -1,103 +1,311 @@
-import Image from "next/image";
+"use client";
+
+import { useRef, useState, useEffect } from "react";
+import { stopSandboxSession } from "@/app/actions.js";
+import { SSEEventType } from "@/constants";
+import { parseSSE } from "@/utils/sse.helper";
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.js
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [sandboxId, setSandboxId] = useState(null);
+  const [sandboxStreamUrl, setSandboxStreamUrl] = useState(null);
+  const sandboxStreamContainerRef = useRef(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  const [messages, setMessages] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [input, setInput] = useState("");
+  const abortControllerRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  function handleInputChange(e) {
+    setInput(e.target.value);
+  }
+
+  function handleOnSandboxCreated(newSandboxId, newSandboxStreamUrl) {
+    setSandboxId(newSandboxId);
+    setSandboxStreamUrl(newSandboxStreamUrl);
+  }
+
+  async function handleStopSandboxSession() {
+    if (sandboxId) {
+      try {
+        handleStopTask();
+        const success = await stopSandboxSession(sandboxId);
+        if (success) {
+          setSandboxId(null);
+          setSandboxStreamUrl(null);
+          setMessages([]);
+        } else {
+          throw new Error("Error in stopping sandbox session");
+        }
+      } catch (error) {
+        console.log(error);
+      }
+    }
+  }
+
+  function handleSend() {
+    if (!input.trim()) return;
+    const content = input.trim();
+    setInput("");
+
+    if (content) {
+      const resolution = [
+        sandboxStreamContainerRef.current?.clientWidth,
+        sandboxStreamContainerRef.current?.clientHeight,
+      ];
+
+      handleRunTask({
+        content,
+        sandboxId: sandboxId || undefined,
+        resolution,
+      });
+    }
+  }
+
+  async function handleRunTask({ content, sandboxId, resolution }) {
+    if (isLoading) return;
+
+    setIsLoading(true);
+
+    const userMessage = { role: "user", content, id: Date.now().toString() };
+    setMessages((prev) => [...prev, userMessage]);
+
+    abortControllerRef.current = new AbortController();
+
+    try {
+      const apiMessages = messages
+        .concat(userMessage)
+        .filter((msg) => msg.role === "user" || msg.role === "assistant")
+        .map((msg) => ({ role: msg.role, content: msg.content }));
+
+      const response = await fetch("/api/ai-agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: apiMessages,
+          sandboxId,
+          resolution,
+        }),
+        signal: abortControllerRef.current.signal,
+      });
+
+      if (!response.ok) throw new Error("Error in sending message");
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("Error in sending message");
+
+      const mockTaskStartedSSE = { type: SSEEventType.TASK_STARTED };
+      handleSSE(mockTaskStartedSSE);
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          if (buffer.trim()) {
+            const parsedEvent = parseSSE(buffer);
+            handleSSE(parsedEvent);
+          }
+          break;
+        }
+
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+
+        for (const event of events) {
+          if (!event.trim()) continue;
+          const parsedEvent = parseSSE(event);
+          if (!parsedEvent) continue;
+          handleSSE(parsedEvent);
+        }
+      }
+    } catch (error) {
+      console.log(error);
+    }
+  }
+
+  function handleStopTask() {
+    if (abortControllerRef.current) {
+      try {
+        abortControllerRef.current.abort();
+        setIsLoading(false);
+      } catch (error) {
+        console.log(error);
+        setIsLoading(false);
+      }
+    }
+  }
+
+  function handleSSE(event) {
+    switch (event.type) {
+      case SSEEventType.TASK_STARTED: {
+        addSystemMessage(setMessages, "Task started");
+        break;
+      }
+      case SSEEventType.TASK_COMPLETED: {
+        addSystemMessage(setMessages, event.content || "Task completed");
+        setIsLoading(false);
+        break;
+      }
+      case SSEEventType.TASK_ERROR: {
+        addSystemMessage(setMessages, event.content || "Task completed");
+        setIsLoading(false);
+        break;
+      }
+      case SSEEventType.ACTION_STARTED: {
+        if (event.action) addActionMessage(setMessages, event.action);
+        break;
+      }
+      case SSEEventType.ACTION_COMPLETED: {
+        updateLastActionMessage(setMessages, "completed");
+        break;
+      }
+      case SSEEventType.REASONING: {
+        if (typeof event.content === "string")
+          addAgentMessage(setMessages, event.content);
+        break;
+      }
+      case SSEEventType.SANDBOX_CREATED: {
+        if (event.sandboxId && event.sandboxStreamUrl) {
+          handleOnSandboxCreated(event.sandboxId, event.sandboxStreamUrl);
+        }
+        break;
+      }
+    }
+  }
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  return (
+    <div className="flex w-full h-screen bg-gray-50">
+      <div className="flex flex-col w-1/2 h-full border-r border-gray-200 bg-white">
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {messages.map((msg, idx) => (
+            <div
+              key={idx}
+              className={`px-2 py-1 ${
+                msg.role === "user"
+                  ? "ml-auto bg-blue-500 text-white max-w-lg w-fit my-2"
+                  : msg.role === "agent"
+                  ? "mr-auto bg-gray-200 text-gray-900 max-w-lg w-fit my-2"
+                  : "bg-gray-50 w-full text-sm"
+              }`}
+            >
+              {msg.role === "user" || msg.role === "agent" ? (
+                msg.content
+              ) : msg.role === "action" ? (
+                <pre>
+                  {msg.status === "completed" ? "🟢" : "🟠"} Action{" "}
+                  {JSON.stringify(msg.action)}{" "}
+                </pre>
+              ) : (
+                ""
+              )}
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+        <div className="w-full px-4 border-t border-gray-100 bg-gray-50 flex items-center gap-2 px-4 h-15">
+          <input
+            type="text"
+            value={input}
+            onChange={handleInputChange}
+            className="flex-1 px-4 py-2 border border-gray-300 bg-white focus:outline-none focus:border-blue-400 shadow-sm"
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+          {isLoading ? (
+            <button
+              onClick={handleStopTask}
+              className="px-5 py-2 bg-red-500 text-white font-semibold hover:bg-red-600 shadow"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              className="px-5 py-2 bg-blue-500 text-white font-semibold hover:bg-blue-600 shadow"
+            >
+              Send
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="w-1/2 h-full bg-gray-100 flex flex-col relative">
+        <div
+          className="flex-1 flex items-center justify-center"
+          ref={sandboxStreamContainerRef}
         >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          {sandboxStreamUrl ? (
+            <iframe
+              src={sandboxStreamUrl}
+              title="Sandbox Stream"
+              className="w-full h-full bg-black rounded-lg border border-gray-300 shadow"
+              allow="clipboard-read; clipboard-write"
+            />
+          ) : (
+            <div className="text-gray-400 text-lg font-medium"></div>
+          )}
+        </div>
+        <div className="flex justify-center items-center px-4 h-15">
+          {sandboxStreamUrl ? (
+            <button
+              onClick={handleStopSandboxSession}
+              className="px-4 py-2 bg-red-500 text-white font-semibold hover:bg-red-600 shadow transition"
+              disabled={!sandboxStreamUrl}
+            >
+              Stop
+            </button>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
+}
+
+function addSystemMessage(setMessages, text) {
+  setMessages((prev) => [
+    ...prev,
+    { role: "system", id: `system-${Date.now()}`, content: text },
+  ]);
+}
+
+function addAgentMessage(setMessages, text) {
+  setMessages((prev) => [
+    ...prev,
+    {
+      role: "agent",
+      id: `agent-${Date.now()}`,
+      content: text,
+    },
+  ]);
+}
+
+function addActionMessage(setMessages, action) {
+  setMessages((prev) => [
+    ...prev,
+    {
+      role: "action",
+      id: `action-${Date.now()}`,
+      action,
+      status: "pending",
+    },
+  ]);
+}
+
+function updateLastActionMessage(setMessages, status) {
+  setMessages((prev) => {
+    const lastActionIndex = [...prev]
+      .reverse()
+      .findIndex((msg) => msg.role === "action");
+    if (lastActionIndex === -1) return prev;
+    const actualIndex = prev.length - 1 - lastActionIndex;
+    return prev.map((msg, index) =>
+      index === actualIndex ? { ...msg, status: status } : msg
+    );
+  });
 }
