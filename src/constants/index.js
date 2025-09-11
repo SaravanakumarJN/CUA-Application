@@ -7,8 +7,3 @@ export const SSEEventType = {
   ACTION_COMPLETED: "ACTION_COMPLETED",
   REASONING: "REASONING",
 };
-
-export const MAX_WIDTH = 1024;
-export const MAX_HEIGHT = 768;
-export const MIN_WIDTH = 640;
-export const MIN_HEIGHT = 480;

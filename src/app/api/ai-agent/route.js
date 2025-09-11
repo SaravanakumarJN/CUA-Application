@@ -2,7 +2,6 @@ import { Sandbox } from "@e2b/desktop";
 import { OpenAiClient } from "@/utils/ai-client/openai";
 import { createStreamingResponse } from "@/utils/sse.helper";
 import { SSEEventType } from "@/constants";
-import { resolutionUtils } from "@/utils/resolution.helper";
 import { sleep } from "@/utils/generic.helper";
 
 export async function POST(request) {
@@ -39,7 +38,6 @@ export async function POST(request) {
 }
 
 function getAiClient(sandbox, resolution) {
-  // resolution = resolutionUtils(resolution);
   return OpenAiClient(sandbox, resolution);
 }
 

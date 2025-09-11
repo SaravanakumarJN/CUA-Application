@@ -18,7 +18,6 @@ export function OpenAiClient(sandbox, resolution) {
         await sandbox.write(action.text);
         break;
       case "click": {
-        // const [x, y] = resolution.toOriginal([action.x, action.y]);
         const [x, y] = [action.x, action.y];
         if (action.button === "left") await sandbox.leftClick(x, y);
         else if (action.button === "right") await sandbox.rightClick(x, y);
@@ -26,7 +25,6 @@ export function OpenAiClient(sandbox, resolution) {
         break;
       }
       case "double_click": {
-        // const [x, y] = resolution.toOriginal([action.x, action.y]);
         const [x, y] = [action.x, action.y];
         await sandbox.doubleClick(x, y);
         break;
@@ -41,17 +39,11 @@ export function OpenAiClient(sandbox, resolution) {
         await sandbox.press(action.keys);
         break;
       case "move": {
-        // const [x, y] = resolution.toOriginal([action.x, action.y]);
         const [x, y] = [action.x, action.y];
         await sandbox.moveMouse(x, y);
         break;
       }
       case "drag": {
-        // const start = resolution.toOriginal([
-        //   action.path[0].x,
-        //   action.path[0].y,
-        // ]);
-        // const end = resolution.toOriginal([action.path[1].x, action.path[1].y]);
         const end = [action.path[1].x, action.path[1].y];
         const start = [action.path[0].x, action.path[0].y];
         await sandbox.drag(start, end);
@@ -68,7 +60,6 @@ export function OpenAiClient(sandbox, resolution) {
 
   async function run(messages, sendSSE, signal) {
     try {
-      // const [width, height] = resolution.getScaledResolution();
       const [width, height] = resolution;
 
       const tool = {
@@ -130,8 +121,6 @@ export function OpenAiClient(sandbox, resolution) {
 
         await sleep(3000);
         const screenshot = await sandbox.screenshot();
-        // const scaledScreenshot = await resolution.scaleScreenshot(screenshot);
-        // const base64 = Buffer.from(scaledScreenshot).toString("base64");
         const base64 = Buffer.from(screenshot).toString("base64");
 
         const output = {
