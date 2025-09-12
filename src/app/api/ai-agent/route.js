@@ -65,7 +65,8 @@ async function getSandbox(sandboxId, resolution) {
     sandbox = await Sandbox.create({
       resolution,
       dpi: 96,
-      timeoutMs: 1200000
+      timeoutMs: 3_600_000, // 1 hour
+      requestTimeoutMs: 300_000, // 5 mins
     });
     await sandbox.stream.start();
     sandboxStreamUrl = sandbox.stream.getUrl();
