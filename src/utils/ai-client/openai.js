@@ -4,7 +4,7 @@ import { SSEEventType } from "@/constants";
 
 const computerUseAgentDefaultConfig = {
   model: "computer-use-preview",
-  instructions: `You are a helpful assistant. You have access to virtual computer and can use it inorder to help the user with their tasks. The virtual computer is based on Ubuntu 22.04. VERY IMPORTANT: Monitor the screenshots closely to avoid unnecessary waiting calls`,
+  instructions: `You are a ai assistant that can use a computer to help the user with their tasks. The screenshots that you receive are from a running sandbox instance, allowing you to see and interact with a real virtual computer environment in real-time. The virtual computer is based on Ubuntu 22.04, and it has many pre-installed applications. You can execute most commands and operations.`,
   truncation: "auto",
   reasoning: { effort: "medium", generate_summary: "concise" },
 };
@@ -12,53 +12,7 @@ const computerUseAgentDefaultConfig = {
 export function OpenAiClient(sandbox, resolution) {
   const client = new OpenAI();
 
-  async function executeComputerCallAction(action) {
-    switch (action.type) {
-      case "type":
-        await sandbox.write(action.text);
-        break;
-      case "click": {
-        const [x, y] = [action.x, action.y];
-        if (action.button === "left") await sandbox.leftClick(x, y);
-        else if (action.button === "right") await sandbox.rightClick(x, y);
-        else if (action.button === "wheel") await sandbox.middleClick(x, y);
-        break;
-      }
-      case "double_click": {
-        const [x, y] = [action.x, action.y];
-        await sandbox.doubleClick(x, y);
-        break;
-      }
-      case "scroll":
-        if (action.scroll_y < 0)
-          await sandbox.scroll("up", Math.abs(action.scroll_y));
-        else if (action.scroll_y > 0)
-          await sandbox.scroll("down", action.scroll_y);
-        break;
-      case "keypress":
-        await sandbox.press(action.keys);
-        break;
-      case "move": {
-        const [x, y] = [action.x, action.y];
-        await sandbox.moveMouse(x, y);
-        break;
-      }
-      case "drag": {
-        const end = [action.path[1].x, action.path[1].y];
-        const start = [action.path[0].x, action.path[0].y];
-        await sandbox.drag(start, end);
-        break;
-      }
-      case "wait": {
-        await sleep(5000);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  async function run(messages, sendSSE, signal) {
+  async function executeTaskLoop(messages, sendSSE, signal) {
     try {
       const [width, height] = resolution;
 
@@ -107,7 +61,7 @@ export function OpenAiClient(sandbox, resolution) {
         if (reasoningItems.length > 0 && "content" in reasoningItems[0]) {
           const content = reasoningItems[0].content;
           sendSSE({
-            type: "reasoning",
+            type: SSEEventType.REASONING,
             content:
               content[0].type === "output_text"
                 ? content[0].text
@@ -148,5 +102,51 @@ export function OpenAiClient(sandbox, resolution) {
     }
   }
 
-  return { run };
+  async function executeComputerCallAction(action) {
+    switch (action.type) {
+      case "type":
+        await sandbox.write(action.text);
+        break;
+      case "click": {
+        const { x, y } = action;
+        if (action.button === "left") await sandbox.leftClick(x, y);
+        else if (action.button === "right") await sandbox.rightClick(x, y);
+        else if (action.button === "wheel") await sandbox.middleClick(x, y);
+        break;
+      }
+      case "double_click": {
+        const { x, y } = action;
+        await sandbox.doubleClick(x, y);
+        break;
+      }
+      case "scroll":
+        if (action.scroll_y < 0)
+          await sandbox.scroll("up", Math.abs(action.scroll_y));
+        else if (action.scroll_y > 0)
+          await sandbox.scroll("down", action.scroll_y);
+        break;
+      case "keypress":
+        await sandbox.press(action.keys);
+        break;
+      case "move": {
+        const { x, y } = action;
+        await sandbox.moveMouse(x, y);
+        break;
+      }
+      case "drag": {
+        const end = [action.path[1].x, action.path[1].y];
+        const start = [action.path[0].x, action.path[0].y];
+        await sandbox.drag(start, end);
+        break;
+      }
+      case "wait": {
+        await sleep(5000);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return { executeTaskLoop };
 }
