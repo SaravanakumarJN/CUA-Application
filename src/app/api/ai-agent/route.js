@@ -1,8 +1,9 @@
-import { Sandbox } from "@e2b/desktop";
 import { OpenAiClient } from "@/utils/ai-client/openai";
+import { E2bSandboxClient } from "@/utils/sandbox/e2b";
 import { createStreamingResponse } from "@/utils/sse.helper";
-import { SSEEventType } from "@/constants";
 import { sleep } from "@/utils/generic.helper";
+import { createErrorResponse } from "@/utils/http.helper";
+import { ERROR_TYPES, SSEEventType } from "@/constants";
 
 export async function POST(request) {
   const body = await request.json();
@@ -16,80 +17,61 @@ export async function POST(request) {
     });
   }
 
-  let sandbox, sandboxCreationEvent;
+  let sandbox, sandboxDetails;
   try {
-    const sandboxResult = await getSandbox(sandboxId, resolution);
-    sandbox = sandboxResult.sandbox;
-    sandboxCreationEvent = sandboxResult.sandboxCreationEvent;
+    const sandboxClient = getSandboxClient(sandboxId, resolution);
+    const sandboxInstance = await sandboxClient.getSandbox();
+    sandbox = sandboxInstance.sandbox;
+    sandboxDetails = sandboxInstance.sandboxDetails;
   } catch (err) {
     console.error("Sandbox error:", err);
-    return errorResponse("sandbox_error", "Error in sandbox operation.", 500);
-  }
-
-  let aiClient;
-  try {
-    aiClient = getAiClient(sandbox, resolution);
-
-    return createStreamingResponse(async ({ send: sendSSE, close }) => {
-      if (sandboxCreationEvent) {
-        sendSSE(sandboxCreationEvent);
-        sleep(3000);
-      }
-      await aiClient.executeTaskLoop(messages, sendSSE, signal);
-      close();
-    });
-  } catch (err) {
-    console.error("AI client error:", err);
-    return errorResponse(
-      "ai_client_error",
-      "Error in AI client operation.",
+    return createErrorResponse(
+      {
+        type: ERROR_TYPES.SANDBOX_ERROR,
+        message: "Failed to initialize sandbox environment.",
+      },
       500
     );
   }
-}
 
-function errorResponse(type, message, status) {
-  return new Response(JSON.stringify({ type, message }), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+  try {
+    const aiClient = getAiClient(sandbox, resolution);
+
+    return createStreamingResponse(
+      async ({ send, close, isClosed }) => {
+        try {
+          if (sandboxDetails) {
+            send(SSEEventType.SANDBOX_CREATED, {
+              message: "Sandbox environment created successfully",
+              data: sandboxDetails,
+            });
+            await sleep(3000);
+          }
+          await aiClient.executeTaskLoop(messages, send, signal);
+        } catch (err) {
+          console.error("AI client error:", err);
+        } finally {
+          if (!isClosed()) close();
+        }
+      },
+      { signal: request?.signal }
+    );
+  } catch (err) {
+    console.error("AI client error:", err);
+    return createErrorResponse(
+      {
+        type: ERROR_TYPES.AI_CLIENT_ERROR,
+        message: "Failed to start AI client.",
+      },
+      500
+    );
+  }
 }
 
 function getAiClient(sandbox, resolution) {
   return OpenAiClient(sandbox, resolution);
 }
 
-async function getSandbox(sandboxId, resolution) {
-  let sandbox, sandboxStreamUrl, created;
-  if (!sandboxId) {
-    sandbox = await Sandbox.create({
-      resolution,
-      dpi: 96,
-      timeoutMs: 3_600_000, // 1 hour
-      requestTimeoutMs: 300_000, // 5 mins
-    });
-    await sandbox.stream.start();
-    sandboxStreamUrl = sandbox.stream.getUrl();
-    sandboxId = sandbox.sandboxId;
-    created = true;
-  } else {
-    sandbox = await Sandbox.connect(sandboxId);
-    created = false;
-  }
-
-  const sandboxCreationEvent =
-    created && sandboxId && sandboxStreamUrl
-      ? {
-          type: SSEEventType.SANDBOX_CREATED,
-          sandboxId,
-          sandboxStreamUrl,
-        }
-      : null;
-
-  return {
-    sandbox,
-    sandboxId,
-    sandboxStreamUrl,
-    sandboxCreationEvent,
-  };
+function getSandboxClient(sandboxId, resolution) {
+  return E2bSandboxClient(sandboxId, resolution);
 }

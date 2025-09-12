@@ -1,8 +1,8 @@
 import OpenAI from "openai";
 import { sleep } from "../generic.helper";
-import { SSEEventType } from "@/constants";
+import { SSEEventType, ERROR_TYPES } from "@/constants";
 
-const computerUseAgentDefaultConfig = {
+const aiClientDefaultConfig = {
   model: "computer-use-preview",
   instructions: `You are a ai assistant that can use a computer to help the user with their tasks. The screenshots that you receive are from a running sandbox instance, allowing you to see and interact with a real virtual computer environment in real-time. The virtual computer is based on Ubuntu 22.04, and it has many pre-installed applications. You can execute most commands and operations.`,
   truncation: "auto",
@@ -12,8 +12,12 @@ const computerUseAgentDefaultConfig = {
 export function OpenAiClient(sandbox, resolution) {
   const client = new OpenAI();
 
-  async function executeTaskLoop(messages, sendSSE, signal) {
+  async function executeTaskLoop(messages, send, signal) {
     try {
+      send(SSEEventType.TASK_STARTED, {
+        message: "Task started",
+      });
+
       const [width, height] = resolution;
 
       const tool = {
@@ -24,16 +28,23 @@ export function OpenAiClient(sandbox, resolution) {
       };
 
       let response = await client.responses.create({
-        ...computerUseAgentDefaultConfig,
+        ...aiClientDefaultConfig,
         tools: [tool],
         input: [...messages],
       });
 
       while (true) {
         if (signal?.aborted) {
-          sendSSE({
-            type: SSEEventType.TASK_COMPLETED,
-            content: "Stopped by user",
+          send(SSEEventType.TASK_ABORTED, {
+            message: "Task aborted by user",
+          });
+          break;
+        }
+
+        if (!response || !Array.isArray(response.output)) {
+          send(SSEEventType.TASK_FAILED, {
+            message: "AI model returned an unexpected response format.",
+            data: { code: ERROR_TYPES.AI_CLIENT_TASK_ERROR, details: response },
           });
           break;
         }
@@ -43,10 +54,11 @@ export function OpenAiClient(sandbox, resolution) {
         );
 
         if (computerCalls.length === 0) {
-          sendSSE({ type: SSEEventType.TASK_COMPLETED });
-          sendSSE({
-            type: SSEEventType.REASONING,
-            content: response.output_text,
+          send(SSEEventType.TASK_COMPLETED, {
+            message: "Task completed successfully",
+          });
+          send(SSEEventType.TASK_REASONING, {
+            message: response.output_text,
           });
           break;
         }
@@ -56,24 +68,41 @@ export function OpenAiClient(sandbox, resolution) {
         const action = call.action;
 
         const reasoningItems = response.output.filter(
-          (i) => i.type === "message" && "content" in i
+          (i) => i.type === "message" && i.content !== undefined
         );
-        if (reasoningItems.length > 0 && "content" in reasoningItems[0]) {
+        if (reasoningItems.length > 0) {
           const content = reasoningItems[0].content;
-          sendSSE({
-            type: SSEEventType.REASONING,
-            content:
-              content[0].type === "output_text"
-                ? content[0].text
-                : JSON.stringify(content),
+          const reasoningText =
+            content[0].type === "output_text"
+              ? content[0].text
+              : JSON.stringify(content);
+          send(SSEEventType.TASK_REASONING, {
+            message: reasoningText,
           });
         }
 
-        sendSSE({ type: SSEEventType.ACTION_STARTED, action });
-        await executeComputerCallAction(action);
-        sendSSE({ type: SSEEventType.ACTION_COMPLETED, action });
+        send(SSEEventType.TASK_ACTION_STARTED, {
+          message: `Starting ${action?.type || "sandbox"} action`,
+          data: { action },
+        });
+        try {
+          await executeComputerCallAction(action);
+          await sleep(3000);
+        } catch (err) {
+          send(SSEEventType.TASK_FAILED, {
+            message: `Failed to execute ${action?.type || "sandbox"} action.`,
+            data: {
+              code: ERROR_TYPES.SANDBOX_ACTION_ERROR,
+              details: String(err?.message || err),
+            },
+          });
+          break;
+        }
+        send(SSEEventType.TASK_ACTION_COMPLETED, {
+          message: `Completed ${action?.type || "sandbox"} action`,
+          data: { action },
+        });
 
-        await sleep(3000);
         const screenshot = await sandbox.screenshot();
         const base64 = Buffer.from(screenshot).toString("base64");
 
@@ -87,17 +116,19 @@ export function OpenAiClient(sandbox, resolution) {
         };
 
         response = await client.responses.create({
-          ...computerUseAgentDefaultConfig,
+          ...aiClientDefaultConfig,
           previous_response_id: response.id,
           tools: [tool],
           input: [output],
         });
       }
     } catch (error) {
-      console.log(error);
-      sendSSE({
-        type: "error",
-        content: "An error occured. Please try again.",
+      send(SSEEventType.TASK_FAILED, {
+        message: "An unexpected error occurred during task execution.",
+        data: {
+          code: ERROR_TYPES.AI_CLIENT_TASK_ERROR,
+          details: String(error?.message || error),
+        },
       });
     }
   }

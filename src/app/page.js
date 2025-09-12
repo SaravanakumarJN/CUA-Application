@@ -1,8 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
-import { stopSandboxSession } from "@/app/actions.js";
-import { SSEEventType } from "@/constants";
+import { SSEEventType, MESSAGE_ROLE } from "@/constants";
 import { parseSSE } from "@/utils/sse.helper";
 
 export default function Home() {
@@ -29,8 +28,14 @@ export default function Home() {
     if (sandboxId) {
       try {
         handleStopTask();
-        const success = await stopSandboxSession(sandboxId);
-        if (success) {
+        const res = await fetch("/api/sandbox/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sandboxId }),
+        });
+        if (!res.ok) throw new Error("Error in stopping sandbox session");
+        const data = await res.json();
+        if (data?.success) {
           setSandboxId(null);
           setSandboxStreamUrl(null);
           setMessages([]);
@@ -67,7 +72,11 @@ export default function Home() {
 
     setIsLoading(true);
 
-    const userMessage = { role: "user", content, id: Date.now().toString() };
+    const userMessage = {
+      role: MESSAGE_ROLE.USER,
+      content,
+      id: Date.now().toString(),
+    };
     setMessages((prev) => [...prev, userMessage]);
 
     abortControllerRef.current = new AbortController();
@@ -75,7 +84,11 @@ export default function Home() {
     try {
       const apiMessages = messages
         .concat(userMessage)
-        .filter((msg) => msg.role === "user" || msg.role === "assistant")
+        .filter(
+          (msg) =>
+            msg.role === MESSAGE_ROLE.USER ||
+            msg.role === MESSAGE_ROLE.ASSISTANT
+        )
         .map((msg) => ({ role: msg.role, content: msg.content }));
 
       const response = await fetch("/api/ai-agent", {
@@ -93,9 +106,6 @@ export default function Home() {
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error("Error in sending message");
-
-      const mockTaskStartedSSE = { type: SSEEventType.TASK_STARTED };
-      handleSSE(mockTaskStartedSSE);
 
       const decoder = new TextDecoder();
       let buffer = "";
@@ -142,35 +152,51 @@ export default function Home() {
   function handleSSE(event) {
     switch (event.type) {
       case SSEEventType.TASK_STARTED: {
-        addSystemMessage(setMessages, "Task started");
+        const message = event.message || "Task started";
+        addSystemMessage(setMessages, message);
         break;
       }
       case SSEEventType.TASK_COMPLETED: {
-        addSystemMessage(setMessages, event.content || "Task completed");
+        const message = event.message || "Task finished";
+        addSystemMessage(setMessages, message);
         setIsLoading(false);
         break;
       }
-      case SSEEventType.TASK_ERROR: {
-        addSystemMessage(setMessages, event.content || "Task completed");
+      case SSEEventType.TASK_FAILED: {
+        const message = event.message || "Task failed";
+        const code = event.data?.code ? ` (${event.data.code})` : "";
+        const details = event.data?.details ? ` - ${event.data.details}` : "";
+        addSystemMessage(setMessages, `${message}${code}${details}`);
         setIsLoading(false);
         break;
       }
-      case SSEEventType.ACTION_STARTED: {
-        if (event.action) addActionMessage(setMessages, event.action);
+      case SSEEventType.TASK_ABORTED: {
+        const message = event.message || "Task aborted";
+        addSystemMessage(setMessages, message);
+        setIsLoading(false);
         break;
       }
-      case SSEEventType.ACTION_COMPLETED: {
-        updateLastActionMessage(setMessages, "completed");
+      case SSEEventType.TASK_ACTION_STARTED: {
+        const action = event.data?.action;
+        if (action) addAssistantTaskActionMessage(setMessages, action);
         break;
       }
-      case SSEEventType.REASONING: {
-        if (typeof event.content === "string")
-          addAgentMessage(setMessages, event.content);
+      case SSEEventType.TASK_ACTION_COMPLETED: {
+        const action = event.data?.action;
+        updateLastAssistantTaskActionMessage(setMessages, "completed");
+        break;
+      }
+      case SSEEventType.TASK_REASONING: {
+        const message = event.message || "";
+        if (typeof message === "string") {
+          addAssistantMessage(setMessages, message);
+        }
         break;
       }
       case SSEEventType.SANDBOX_CREATED: {
-        if (event.sandboxId && event.sandboxStreamUrl) {
-          handleOnSandboxCreated(event.sandboxId, event.sandboxStreamUrl);
+        const { sandboxId, sandboxStreamUrl } = event.data || {};
+        if (sandboxId && sandboxStreamUrl) {
+          handleOnSandboxCreated(sandboxId, sandboxStreamUrl);
         }
         break;
       }
@@ -181,6 +207,15 @@ export default function Home() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    return () => {
+      try {
+        handleStopSandboxSession();
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+      } catch (_) {}
+    };
+  }, []);
+
   return (
     <div className="flex w-full h-screen bg-gray-50">
       <div className="flex flex-col w-1/2 h-full border-r border-gray-200 bg-white">
@@ -189,16 +224,17 @@ export default function Home() {
             <div
               key={idx}
               className={`px-2 py-1 ${
-                msg.role === "user"
+                msg.role === MESSAGE_ROLE.USER
                   ? "ml-auto bg-blue-500 text-white max-w-lg w-fit my-2"
-                  : msg.role === "agent"
+                  : msg.role === MESSAGE_ROLE.ASSISTANT
                   ? "mr-auto bg-gray-200 text-gray-900 max-w-lg w-fit my-2"
                   : "bg-gray-50 w-full text-sm"
               }`}
             >
-              {msg.role === "user" || msg.role === "agent" ? (
+              {msg.role === MESSAGE_ROLE.USER ||
+              msg.role === MESSAGE_ROLE.ASSISTANT ? (
                 msg.content
-              ) : msg.role === "action" ? (
+              ) : msg.role === MESSAGE_ROLE.ASSISTANT_TASK_ACTION ? (
                 <pre>
                   {msg.status === "completed" ? "🟢" : "🟠"} Action{" "}
                   {JSON.stringify(msg.action)}{" "}
@@ -270,38 +306,38 @@ export default function Home() {
 function addSystemMessage(setMessages, text) {
   setMessages((prev) => [
     ...prev,
-    { role: "system", id: `system-${Date.now()}`, content: text },
+    { role: MESSAGE_ROLE.SYSTEM, id: `system-${Date.now()}`, content: text },
   ]);
 }
 
-function addAgentMessage(setMessages, text) {
+function addAssistantMessage(setMessages, text) {
   setMessages((prev) => [
     ...prev,
     {
-      role: "agent",
-      id: `agent-${Date.now()}`,
+      role: MESSAGE_ROLE.ASSISTANT,
+      id: `assistant-${Date.now()}`,
       content: text,
     },
   ]);
 }
 
-function addActionMessage(setMessages, action) {
+function addAssistantTaskActionMessage(setMessages, action) {
   setMessages((prev) => [
     ...prev,
     {
-      role: "action",
-      id: `action-${Date.now()}`,
+      role: MESSAGE_ROLE.ASSISTANT_TASK_ACTION,
+      id: `assistant-task-action-${Date.now()}`,
       action,
       status: "pending",
     },
   ]);
 }
 
-function updateLastActionMessage(setMessages, status) {
+function updateLastAssistantTaskActionMessage(setMessages, status) {
   setMessages((prev) => {
     const lastActionIndex = [...prev]
       .reverse()
-      .findIndex((msg) => msg.role === "action");
+      .findIndex((msg) => msg.role === MESSAGE_ROLE.ASSISTANT_TASK_ACTION);
     if (lastActionIndex === -1) return prev;
     const actualIndex = prev.length - 1 - lastActionIndex;
     return prev.map((msg, index) =>

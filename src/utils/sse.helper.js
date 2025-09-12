@@ -1,43 +1,103 @@
-export function formatSSE(event) {
-  return `data: ${JSON.stringify(event)}\n\n`;
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (_) {
+    return JSON.stringify({ error: "[unserializable]" });
+  }
 }
 
-export function parseSSE(event) {
+export function formatSSE(event, options = {}) {
+  const { eventName } = options;
+  const lines = [];
+  if (eventName) lines.push(`event: ${String(eventName)}`);
+  lines.push(`data: ${safeJsonStringify(event)}`);
+  return lines.join("\n") + "\n\n";
+}
+
+export function parseSSE(raw) {
   try {
-    if (!event || event.trim() === "") return null;
-    if (event.startsWith("data: ")) {
-      const jsonStr = event.substring(6).trim();
-      if (!jsonStr) return null;
-      return JSON.parse(jsonStr);
-    }
-    const match = event.match(/data: ({.*})/);
-    if (match && match[1]) return JSON.parse(match[1]);
-    return JSON.parse(event);
+    if (!raw || typeof raw !== "string") return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+
+    const dataLine = trimmed
+      .split("\n")
+      .find((line) => line.startsWith("data: "));
+    if (!dataLine) return null;
+    const jsonStr = dataLine.slice(6).trim();
+    if (!jsonStr) return null;
+    return JSON.parse(jsonStr);
   } catch (error) {
     console.log(error);
     return null;
   }
 }
 
-export function sendSSE(streamController, event) {
-  const data = new TextEncoder().encode(formatSSE(event));
-  streamController.enqueue(data);
-}
+export function createSSEStream(onStart, options = {}) {
+  const { signal } = options;
+  let isClosed = false;
 
-export function makeSSEStream(startFn) {
-  return new ReadableStream({
+  const stream = new ReadableStream({
     start(controller) {
-      return startFn({
-        send: (event) => sendSSE(controller, event),
-        close: () => controller.close(),
-      });
+      const encoder = new TextEncoder();
+
+      function enqueueChunk(text) {
+        if (isClosed) return;
+        try {
+          controller.enqueue(encoder.encode(text));
+        } catch (_) { }
+      }
+
+      function send(type, options = {}) {
+        if (isClosed) return;
+
+        const { message, data } = options;
+        const event = {
+          type,
+          timestamp: Date.now(),
+          ...(message && { message }),
+          ...(data && { data })
+        };
+
+        enqueueChunk(formatSSE(event));
+      }
+
+      function close() {
+        if (isClosed) return;
+        isClosed = true;
+        try {
+          controller.close();
+        } catch (_) { }
+      }
+
+      function error(err) {
+        if (isClosed) return;
+        isClosed = true;
+        try {
+          controller.error(err);
+        } catch (_) { }
+      }
+
+      if (signal) {
+        if (signal.aborted) {
+          close();
+        } else {
+          signal.addEventListener("abort", close, { once: true });
+        }
+      }
+
+      return onStart({ send, close, error, isClosed: () => isClosed });
     },
-    cancel() {},
+    cancel() {
+      isClosed = true;
+    },
   });
+
+  return stream;
 }
 
-export function createStreamingResponse(fn) {
-  const stream = makeSSEStream(fn);
+export function createStreamingResponse(onStart, options = {}) {
+  const stream = createSSEStream(onStart, options);
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",
