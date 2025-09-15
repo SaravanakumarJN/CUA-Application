@@ -1,35 +1,50 @@
 import OpenAI from "openai";
-import { sleep } from "../generic.helper";
+import { syntheticDelay } from "@/utils/generic.helper";
+import { getOpenAiActions } from "./actions";
 import { SSEEventType, ERROR_TYPES } from "@/constants";
 
-const aiClientDefaultConfig = {
-  model: "computer-use-preview",
-  instructions: `You are a ai assistant that can use a computer to help the user with their tasks. The screenshots that you receive are from a running sandbox instance, allowing you to see and interact with a real virtual computer environment in real-time. The virtual computer is based on Ubuntu 22.04, and it has many pre-installed applications. You can execute most commands and operations.`,
-  truncation: "auto",
-  reasoning: { effort: "medium", generate_summary: "concise" },
-};
-
-export function OpenAiClient(sandbox, resolution) {
+export function OpenAiClient(sandbox, resolution, sandboxType) {
   const client = new OpenAI();
+  const actions = getOpenAiActions(sandboxType)(sandbox);
 
   async function executeTaskLoop(messages, send, signal) {
+    const aiClientDefaultConfig = {
+      model: "computer-use-preview",
+      instructions:
+        sandboxType === "e2b"
+          ? `You are a ai assistant that can use a computer to help the user with their tasks. The screenshots that you receive are from a running sandbox instance, allowing you to see and interact with a virtual computer environment in real-time. The virtual computer is based on Ubuntu 22.04, and it has many pre-installed applications. You can execute most commands and operations.`
+          : `You are an AI assistant that can use a virtual Android device to help the user with their tasks. The screenshots you receive are from a running Android emulator, allowing you to see and interact with an emulated Android environment in real time. The emulator is based on Android 16, and it supports touch-based input, gestures, typing, launching apps, and interacting with the Android system like a real phone or tablet. 
+          IMPORTANT: You’re given a screenshot that is exactly ${
+            resolution[0]
+          }x${
+              resolution[1]
+            } pixels. The top-left corner is (0,0), the bottom-right is (${
+              resolution[0] - 1
+            },${
+              resolution[1] - 1
+            }). Return the pixel coordinate as seen in this image, counting from the full top left.
+          VERY IMPORTANT: There seems to be negative offset in the coordinates for computer call that you generate, so provide percise coordinates for computer call.
+          VERY IMPORTANT: You are looking at a mobile screenshot (Android 16, 1080x2400 pixels, NO desktop UI). All coordinates are touch coordinates in this pixel grid. DO NOT perform any mouse-based scaling or window mapping. Top left is (0,0), bottom right is (1079,2399).”
+          `,
+      truncation: "auto",
+      reasoning: { effort: "medium", generate_summary: "concise" },
+      tools: [
+        {
+          type: "computer_use_preview",
+          display_width: resolution[0],
+          display_height: resolution[1],
+          environment: "linux",
+        },
+      ],
+    };
+
     try {
       send(SSEEventType.TASK_STARTED, {
         message: "Task started",
       });
 
-      const [width, height] = resolution;
-
-      const tool = {
-        type: "computer_use_preview",
-        display_width: width,
-        display_height: height,
-        environment: "linux",
-      };
-
       let response = await client.responses.create({
         ...aiClientDefaultConfig,
-        tools: [tool],
         input: [...messages],
       });
 
@@ -87,13 +102,12 @@ export function OpenAiClient(sandbox, resolution) {
         });
         try {
           await executeComputerCallAction(action);
-          await sleep(3000);
-        } catch (err) {
+        } catch (error) {
           send(SSEEventType.TASK_FAILED, {
             message: `Failed to execute ${action?.type || "sandbox"} action.`,
             data: {
               code: ERROR_TYPES.SANDBOX_ACTION_ERROR,
-              details: String(err?.message || err),
+              details: String(error?.message || error),
             },
           });
           break;
@@ -103,22 +117,21 @@ export function OpenAiClient(sandbox, resolution) {
           data: { action },
         });
 
-        const screenshot = await sandbox.screenshot();
-        const base64 = Buffer.from(screenshot).toString("base64");
+        await syntheticDelay(3000);
+        const screenshotBase64 = await actions.screenshotBase64();
 
         const output = {
           call_id: callId,
           type: "computer_call_output",
           output: {
             type: "input_image",
-            image_url: `data:image/png;base64,${base64}`,
+            image_url: `data:image/png;base64,${screenshotBase64}`,
           },
         };
 
         response = await client.responses.create({
           ...aiClientDefaultConfig,
           previous_response_id: response.id,
-          tools: [tool],
           input: [output],
         });
       }
@@ -134,49 +147,9 @@ export function OpenAiClient(sandbox, resolution) {
   }
 
   async function executeComputerCallAction(action) {
-    switch (action.type) {
-      case "type":
-        await sandbox.write(action.text);
-        break;
-      case "click": {
-        const { x, y } = action;
-        if (action.button === "left") await sandbox.leftClick(x, y);
-        else if (action.button === "right") await sandbox.rightClick(x, y);
-        else if (action.button === "wheel") await sandbox.middleClick(x, y);
-        break;
-      }
-      case "double_click": {
-        const { x, y } = action;
-        await sandbox.doubleClick(x, y);
-        break;
-      }
-      case "scroll":
-        if (action.scroll_y < 0)
-          await sandbox.scroll("up", Math.abs(action.scroll_y));
-        else if (action.scroll_y > 0)
-          await sandbox.scroll("down", action.scroll_y);
-        break;
-      case "keypress":
-        await sandbox.press(action.keys);
-        break;
-      case "move": {
-        const { x, y } = action;
-        await sandbox.moveMouse(x, y);
-        break;
-      }
-      case "drag": {
-        const end = [action.path[1].x, action.path[1].y];
-        const start = [action.path[0].x, action.path[0].y];
-        await sandbox.drag(start, end);
-        break;
-      }
-      case "wait": {
-        await sleep(5000);
-        break;
-      }
-      default:
-        break;
-    }
+    const actionHandler = actions[action.type];
+    if (typeof actionHandler !== "function") return;
+    await actionHandler(action);
   }
 
   return { executeTaskLoop };

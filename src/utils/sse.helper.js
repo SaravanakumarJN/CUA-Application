@@ -45,7 +45,7 @@ export function createSSEStream(onStart, options = {}) {
         if (isClosed) return;
         try {
           controller.enqueue(encoder.encode(text));
-        } catch (_) { }
+        } catch (_) {}
       }
 
       function send(type, options = {}) {
@@ -56,7 +56,7 @@ export function createSSEStream(onStart, options = {}) {
           type,
           timestamp: Date.now(),
           ...(message && { message }),
-          ...(data && { data })
+          ...(data && { data }),
         };
 
         enqueueChunk(formatSSE(event));
@@ -67,15 +67,15 @@ export function createSSEStream(onStart, options = {}) {
         isClosed = true;
         try {
           controller.close();
-        } catch (_) { }
+        } catch (_) {}
       }
 
-      function error(err) {
+      function error(error) {
         if (isClosed) return;
         isClosed = true;
         try {
-          controller.error(err);
-        } catch (_) { }
+          controller.error(error);
+        } catch (_) {}
       }
 
       if (signal) {
