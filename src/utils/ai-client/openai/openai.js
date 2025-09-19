@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { syntheticDelay } from "@/utils/generic.helper";
-import { getOpenAiActions } from "./actions";
+import { getOpenAiActions } from "../../sandbox/actions";
 import { SSEEventType, ERROR_TYPES } from "@/constants";
 
 export function OpenAiClient(sandbox, resolution, sandboxType) {

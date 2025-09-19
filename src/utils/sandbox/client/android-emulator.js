@@ -3,7 +3,7 @@ import {
   startEmulator,
   waitForAdbDevice,
   waitForBoot,
-} from "../android-emulator.helper";
+} from "../../android-emulator.helper";
 
 const AVD_NAME = process.env.AVD_NAME;
 const EMULATOR_PATH = process.env.EMULATOR_PATH;

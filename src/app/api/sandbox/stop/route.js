@@ -23,7 +23,7 @@ export async function POST(request) {
 
     return createSuccessResponse({ message: "Sandbox stopped successfully" });
   } catch (error) {
-    console.error(error);
+    console.error(`Sandbox Error: ${error}`);
     return createErrorResponse(
       {
         type: ERROR_TYPES.SANDBOX_ERROR,

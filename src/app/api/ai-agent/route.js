@@ -1,13 +1,13 @@
 import { OpenAiClient } from "@/utils/ai-client/openai/openai";
-import { E2bSandboxClient } from "@/utils/sandbox/e2b";
+import { E2bSandboxClient } from "@/utils/sandbox/client/e2b";
 import { createStreamingResponse } from "@/utils/sse.helper";
 import { syntheticDelay } from "@/utils/generic.helper";
 import { createErrorResponse } from "@/utils/http.helper";
 import { ERROR_TYPES, SSEEventType } from "@/constants";
-import { AndroidEmulatorSandboxClient } from "@/utils/sandbox/android-emulator";
+import { AndroidEmulatorSandboxClient } from "@/utils/sandbox/client/android-emulator";
 
-// const SANDBOX_TYPE = 'e2b'
-const SANDBOX_TYPE = "androidEmulator";
+const SANDBOX_TYPE = "e2b";
+// const SANDBOX_TYPE = "androidEmulator";
 
 export async function POST(request) {
   const body = await request.json();
